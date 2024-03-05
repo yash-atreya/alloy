@@ -1039,3 +1039,95 @@ pub(crate) fn kzg_to_versioned_hash(commitment: KzgCommitment) -> B256 {
     res[0] = alloy_eips::eip4844::VERSIONED_HASH_VERSION_KZG;
     B256::new(res.into())
 }
+
+#[cfg(feature = "kzg")]
+pub use builder::SidecarBuilder;
+#[cfg(feature = "kzg")]
+mod builder {
+    use super::*;
+
+    /// Build a [`BlobTransactionSidecar`] from an arbitrary amount of data.
+    #[derive(Debug, Clone)]
+    pub struct SidecarBuilder {
+        data: Vec<Blob>,
+        unused: usize,
+    }
+
+    impl Default for SidecarBuilder {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl SidecarBuilder {
+        /// Instantiate a new builder
+        pub fn new() -> Self {
+            let mut this = Self { data: vec![], unused: 0 };
+            this.push_empty();
+            this
+        }
+
+        fn push_empty(&mut self) {
+            self.data.push(Blob::new([0u8; BYTES_PER_BLOB]));
+            self.unused = BYTES_PER_BLOB;
+        }
+
+        /// Create a new builder from a slice of data.
+        pub fn from_slice(&self, data: &[u8]) -> SidecarBuilder {
+            let mut this = Self::new();
+            this.ingest(data);
+            this
+        }
+
+        /// Ingest data into the builder.
+        pub fn ingest(&mut self, mut data: &[u8]) {
+            // copy the data to the current blob, using only `unused` bytes
+            // make new blobs if necessary to hold more data
+
+            while data.len() > self.unused {
+                let (left, right) = data.split_at(self.unused);
+
+                // copy to data, starting from the unused portion
+                let ptr = BYTES_PER_BLOB - self.unused;
+                let target = &mut (self.data.last_mut().expect("vec never empty")[ptr..]);
+                target.copy_from_slice(left);
+
+                // create a new blob and reset the unused counter
+                self.push_empty();
+
+                // Set the remaining data to the right slice
+                data = right;
+            }
+            // copy the remaining data to the current blob, starting from the
+            // unused portion
+            let target = &mut (self.data.last_mut().expect("vec never empty")
+                [BYTES_PER_BLOB - self.unused..]);
+            let ptr = BYTES_PER_BLOB - self.unused;
+            target[ptr..ptr + data.len()].copy_from_slice(data);
+            self.unused -= data.len();
+        }
+
+        /// Build the sidecar from the data.
+        pub fn build(self, settings: &KzgSettings) -> Result<BlobTransactionSidecar, c_kzg::Error> {
+            let commitments = self
+                .data
+                .iter()
+                .map(|blob| {
+                    KzgCommitment::blob_to_kzg_commitment(blob, settings).map(|c| c.to_bytes())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let proofs = self
+                .data
+                .iter()
+                .zip(commitments.iter())
+                .map(|(blob, commitment)| {
+                    KzgProof::compute_blob_kzg_proof(blob, commitment, settings)
+                        .map(|p| p.to_bytes())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(BlobTransactionSidecar { blobs: self.data, commitments, proofs })
+        }
+    }
+}

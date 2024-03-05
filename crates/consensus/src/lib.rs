@@ -30,6 +30,6 @@ pub use transaction::{
 };
 
 #[cfg(feature = "kzg")]
-pub use transaction::BlobTransactionValidationError;
+pub use transaction::{BlobTransactionValidationError, SidecarBuilder};
 
 pub use alloy_network::TxKind;
