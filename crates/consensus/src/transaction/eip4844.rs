@@ -1130,4 +1130,25 @@ mod builder {
             Ok(BlobTransactionSidecar { blobs: self.data, commitments, proofs })
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn it_ingests() {
+            // test ingesting data into a sidecar builder, by passing
+            // `blob_size+1 bytes`
+            let data = std::iter::repeat(1u8).take(BYTES_PER_BLOB + 1).collect::<Vec<_>>();
+            let mut builder = SidecarBuilder::new();
+            builder.ingest(&data);
+            assert_eq!(builder.data.len(), 2);
+            assert_eq!(builder.unused, BYTES_PER_BLOB - 1);
+            assert_eq!(builder.data.first().unwrap().as_slice(), &[1u8; BYTES_PER_BLOB]);
+
+            let second = builder.data.last().unwrap();
+            assert_eq!(second[0], 1);
+            assert_eq!(&second[1..], &[0u8; BYTES_PER_BLOB - 1]);
+        }
+    }
 }
