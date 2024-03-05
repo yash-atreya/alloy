@@ -1047,9 +1047,15 @@ mod builder {
     use super::*;
 
     /// Build a [`BlobTransactionSidecar`] from an arbitrary amount of data.
+    ///
+    /// This is useful for creating a sidecar from a large amount of data,
+    /// which is then split into blobs. It delays KZG commitments and proofs
+    /// until all data is ready.
     #[derive(Debug, Clone)]
     pub struct SidecarBuilder {
+        /// The blobs in the sidecar.
         data: Vec<Blob>,
+        /// The number of unused bytes in the LAST blob
         unused: usize,
     }
 
@@ -1060,16 +1066,11 @@ mod builder {
     }
 
     impl SidecarBuilder {
-        /// Instantiate a new builder
+        /// Instantiate a new builder.
         pub fn new() -> Self {
             let mut this = Self { data: vec![], unused: 0 };
-            this.push_empty();
+            this.push_empty_blob();
             this
-        }
-
-        fn push_empty(&mut self) {
-            self.data.push(Blob::new([0u8; BYTES_PER_BLOB]));
-            self.unused = BYTES_PER_BLOB;
         }
 
         /// Create a new builder from a slice of data.
@@ -1079,11 +1080,70 @@ mod builder {
             this
         }
 
+        /// Get a reference to the blobs currently in the builder.
+        pub fn blobs(&self) -> &[Blob] {
+            &self.data
+        }
+
+        /// Get the number of unused bytes in the last blob. Ingesting
+        /// more than this number of bytes will cause a new blob to be
+        /// created.
+        pub fn unused(&self) -> usize {
+            self.unused
+        }
+
+        /// Calculate the length of the data in the builder.
+        pub fn len(&self) -> usize {
+            (self.data.len() - 1) * BYTES_PER_BLOB + self.in_current_blob()
+        }
+
+        /// Check if the builder is empty.
+        pub fn is_empty(&self) -> bool {
+            self.data.len() == 1 && self.unused == BYTES_PER_BLOB
+        }
+
+        /// Push an empty blob to the builder, and reset the unused counter.
+        fn push_empty_blob(&mut self) {
+            self.data.push(Blob::new([0u8; BYTES_PER_BLOB]));
+            self.unused = BYTES_PER_BLOB;
+        }
+
+        /// Get the number of bytes in the current blob.
+        fn in_current_blob(&self) -> usize {
+            BYTES_PER_BLOB - self.unused
+        }
+
+        /// Trim a number of bytes from the current blob data. Allows
+        /// zero-filling the trimmed bytes. If trimming more bytes than
+        /// are in the builder, the builder will be emptied.
+        pub fn trim(&mut self, mut bytes: usize, zero_fill: bool) {
+            // while more than the used bytes in a blob
+            while bytes > self.in_current_blob() {
+                bytes -= self.in_current_blob();
+                self.data.pop();
+                self.unused = 0;
+                // shortcut if we've emptied the builder
+                if self.data.is_empty() {
+                    self.push_empty_blob();
+                    return;
+                }
+            }
+            self.unused += bytes;
+
+            if zero_fill {
+                // 0-fill the bytes we just trimmed
+                let last_used_idx = self.in_current_blob();
+                self.data.last_mut().unwrap()[last_used_idx..].fill(0);
+            }
+        }
+
         /// Ingest data into the builder.
         pub fn ingest(&mut self, mut data: &[u8]) {
             // copy the data to the current blob, using only `unused` bytes
             // make new blobs if necessary to hold more data
 
+            // loop over the data, until we can fit the remainder in a single
+            // blob
             while data.len() > self.unused {
                 let (left, right) = data.split_at(self.unused);
 
@@ -1093,7 +1153,7 @@ mod builder {
                 target.copy_from_slice(left);
 
                 // create a new blob and reset the unused counter
-                self.push_empty();
+                self.push_empty_blob();
 
                 // Set the remaining data to the right slice
                 data = right;
@@ -1128,6 +1188,16 @@ mod builder {
                 .collect::<Result<Vec<_>, _>>()?;
 
             Ok(BlobTransactionSidecar { blobs: self.data, commitments, proofs })
+        }
+    }
+
+    impl<'a> FromIterator<&'a [u8]> for SidecarBuilder {
+        fn from_iter<I: IntoIterator<Item = &'a [u8]>>(iter: I) -> Self {
+            let mut this = Self::new();
+            for data in iter {
+                this.ingest(data);
+            }
+            this
         }
     }
 
