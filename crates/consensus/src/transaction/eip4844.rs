@@ -1040,11 +1040,150 @@ pub(crate) fn kzg_to_versioned_hash(commitment: KzgCommitment) -> B256 {
     B256::new(res.into())
 }
 
-#[cfg(feature = "kzg")]
-pub use builder::SidecarBuilder;
-#[cfg(feature = "kzg")]
+// #[cfg(feature = "kzg")]
+// pub use builder::SidecarBuilder;
+// #[cfg(feature = "kzg")]
 mod builder {
+    use std::{
+        marker::PhantomData,
+        ops::{Deref, DerefMut},
+    };
+
+    use alloy_eips::eip4844::{BLS_MODULUS_BYTES, FIELD_ELEMENTS_PER_BLOB};
+
     use super::*;
+
+    /// Determine whether a slice of bytes is a valid field element. Valid
+    /// field elements are 32 bytes long and less than the modulus.
+    pub fn is_valid_field_element(data: &[u8]) -> bool {
+        match data.len() {
+            33.. => false,
+            32 => data <= BLS_MODULUS_BYTES.as_slice(),
+            _ => true,
+        }
+    }
+
+    /// A coding strategy for ingesting and decoding data.
+    pub trait IngestionStrategy {
+        /// This function MUST write only complete, valid, field elements.
+        ///
+        /// # Returns
+        ///
+        /// The number of field elements written to the blobs.
+        fn code(data: &[u8], buffer: &mut SidecarBuilderInner) -> Result<usize, ()>;
+
+        fn decode(data: impl Iterator<Item = Blob>) -> Vec<u8>;
+    }
+
+    #[derive(Debug, Copy, Clone, Default)]
+    struct SimpleCoder;
+
+    impl IngestionStrategy for SimpleCoder {
+        fn code(data: &[u8], buffer: &mut SidecarBuilderInner) -> Result<usize, ()> {
+            todo!()
+        }
+
+        fn decode(data: impl Iterator<Item = Blob>) -> Vec<u8> {
+            todo!()
+        }
+    }
+
+    #[derive(Debug, Clone, Default)]
+    struct SidecarBuilderInner {
+        /// The blobs in the sidecar.
+        blobs: Vec<Blob>,
+        /// The number of field elements that we have ingested
+        fe: usize,
+    }
+
+    impl SidecarBuilderInner {
+        /// Get a reference to the blobs currently in the builder.
+        pub fn blobs(&self) -> &[Blob] {
+            &self.blobs
+        }
+
+        /// Get the number of unused bytes in the last blob. Ingesting
+        /// more than this number of bytes will cause a new blob to be
+        /// created.
+        fn free_fe(&self) -> usize {
+            FIELD_ELEMENTS_PER_BLOB as usize - self.fe_in_current_blob()
+        }
+
+        /// Calculate the length of the data IN BYTES in the builder.
+        pub fn len(&self) -> usize {
+            self.fe * 32
+        }
+
+        /// Check if the builder is empty.
+        pub fn is_empty(&self) -> bool {
+            self.fe == 0
+        }
+
+        /// Push an empty blob to the builder, and reset the unused counter.
+        fn push_empty_blob(&mut self) {
+            self.blobs.push(Blob::new([0u8; BYTES_PER_BLOB]));
+        }
+
+        /// Get the number of used field elements in the current blob.
+        fn fe_in_current_blob(&self) -> usize {
+            self.fe % FIELD_ELEMENTS_PER_BLOB as usize
+        }
+
+        /// Get the index of the first unused field element in the current blob.
+        fn first_unused_index_in_current_blob(&self) -> Option<usize> {
+            if self.fe_in_current_blob() as u64 == FIELD_ELEMENTS_PER_BLOB {
+                None
+            } else {
+                Some(self.fe_in_current_blob())
+            }
+        }
+
+        /// Get a reference to the current blob.
+        fn current_blob(&self) -> &Blob {
+            self.blobs.last().expect("never empty")
+        }
+
+        /// Get a mutable reference to the current blob.
+        fn current_blob_mut(&mut self) -> &mut Blob {
+            self.blobs.last_mut().expect("never empty")
+        }
+
+        /// Get the field element at the given index, in the current blob.
+        fn fe_at(&self, index: usize) -> &[u8] {
+            &self.current_blob()[index * 32..(index + 1) * 32]
+        }
+
+        /// Get a mutable reference to the field element at the given index, in
+        /// the current blob.
+        fn fe_at_mut(&mut self, index: usize) -> &mut [u8] {
+            &mut self.current_blob_mut()[index * 32..(index + 1) * 32]
+        }
+
+        /// Get a mutable reference to the next unused field element.
+        pub fn next_unused_fe_mut(&mut self) -> &mut [u8] {
+            if self.first_unused_index_in_current_blob().is_none() {
+                self.push_empty_blob();
+            }
+            self.fe_at_mut(self.first_unused_index_in_current_blob().expect(""))
+        }
+
+        /// Ingest a field element into the current blobs.
+        ///
+        /// # Panics
+        pub fn ingest_fe(&mut self, data: &[u8]) -> Result<(), ()> {
+            if !is_valid_field_element(data) {
+                return Err(());
+            }
+
+            if self.next_unused_fe_mut() {
+                self.push_empty_blob();
+            }
+
+            // copy by left-padding
+            self.next_unused_fe_mut()[1..].copy_from_slice(data);
+            Ok(())
+        }
+    }
 
     /// Build a [`BlobTransactionSidecar`] from an arbitrary amount of data.
     ///
@@ -1052,146 +1191,83 @@ mod builder {
     /// which is then split into blobs. It delays KZG commitments and proofs
     /// until all data is ready.
     #[derive(Debug, Clone)]
-    pub struct SidecarBuilder {
-        /// The blobs in the sidecar.
-        data: Vec<Blob>,
-        /// The number of unused bytes in the LAST blob
-        unused: usize,
+    pub struct SidecarBuilder<T = SimpleCoder> {
+        inner: SidecarBuilderInner,
+        /// The strategy to use for ingesting and decoding data.
+        strategy: PhantomData<fn() -> T>,
     }
 
-    impl Default for SidecarBuilder {
+    impl Deref for SidecarBuilder {
+        type Target = SidecarBuilderInner;
+
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
+    }
+
+    impl DerefMut for SidecarBuilder {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.inner
+        }
+    }
+
+    impl<T> Default for SidecarBuilder<T>
+    where
+        T: Default + IngestionStrategy,
+    {
         fn default() -> Self {
             Self::new()
         }
     }
 
-    impl SidecarBuilder {
+    impl<T: IngestionStrategy> SidecarBuilder<T> {
         /// Instantiate a new builder.
         pub fn new() -> Self {
-            let mut this = Self { data: vec![], unused: 0 };
-            this.push_empty_blob();
+            let mut this = Self { inner: SidecarBuilderInner::default(), strategy: PhantomData };
+            this.inner.push_empty_blob();
             this
         }
 
         /// Create a new builder from a slice of data.
-        pub fn from_slice(&self, data: &[u8]) -> SidecarBuilder {
+        pub fn from_slice(data: &[u8]) -> SidecarBuilder<T> {
             let mut this = Self::new();
             this.ingest(data);
             this
         }
 
-        /// Get a reference to the blobs currently in the builder.
-        pub fn blobs(&self) -> &[Blob] {
-            &self.data
+        /// Ingest a slice of data into the builder.
+        pub fn ingest(&mut self, data: &[u8]) {
+            T::code(data, &mut self.inner);
         }
 
-        /// Get the number of unused bytes in the last blob. Ingesting
-        /// more than this number of bytes will cause a new blob to be
-        /// created.
-        pub fn unused(&self) -> usize {
-            self.unused
-        }
+        // /// Build the sidecar from the data.
+        // pub fn build(self, settings: &KzgSettings) -> Result<BlobTransactionSidecar,
+        // c_kzg::Error> {     let commitments = self
+        //         .data
+        //         .iter()
+        //         .map(|blob| {
+        //             KzgCommitment::blob_to_kzg_commitment(blob, settings).map(|c| c.to_bytes())
+        //         })
+        //         .collect::<Result<Vec<_>, _>>()?;
 
-        /// Calculate the length of the data in the builder.
-        pub fn len(&self) -> usize {
-            (self.data.len() - 1) * BYTES_PER_BLOB + self.in_current_blob()
-        }
+        //     let proofs = self
+        //         .data
+        //         .iter()
+        //         .zip(commitments.iter())
+        //         .map(|(blob, commitment)| {
+        //             KzgProof::compute_blob_kzg_proof(blob, commitment, settings)
+        //                 .map(|p| p.to_bytes())
+        //         })
+        //         .collect::<Result<Vec<_>, _>>()?;
 
-        /// Check if the builder is empty.
-        pub fn is_empty(&self) -> bool {
-            self.data.len() == 1 && self.unused == BYTES_PER_BLOB
-        }
-
-        /// Push an empty blob to the builder, and reset the unused counter.
-        fn push_empty_blob(&mut self) {
-            self.data.push(Blob::new([0u8; BYTES_PER_BLOB]));
-            self.unused = BYTES_PER_BLOB;
-        }
-
-        /// Get the number of bytes in the current blob.
-        fn in_current_blob(&self) -> usize {
-            BYTES_PER_BLOB - self.unused
-        }
-
-        /// Trim a number of bytes from the current blob data. Allows
-        /// zero-filling the trimmed bytes. If trimming more bytes than
-        /// are in the builder, the builder will be emptied.
-        pub fn trim(&mut self, mut bytes: usize, zero_fill: bool) {
-            // while more than the used bytes in a blob
-            while bytes > self.in_current_blob() {
-                bytes -= self.in_current_blob();
-                self.data.pop();
-                self.unused = 0;
-                // shortcut if we've emptied the builder
-                if self.data.is_empty() {
-                    self.push_empty_blob();
-                    return;
-                }
-            }
-            self.unused += bytes;
-
-            if zero_fill {
-                // 0-fill the bytes we just trimmed
-                let last_used_idx = self.in_current_blob();
-                self.data.last_mut().unwrap()[last_used_idx..].fill(0);
-            }
-        }
-
-        /// Ingest data into the builder.
-        pub fn ingest(&mut self, mut data: &[u8]) {
-            // copy the data to the current blob, using only `unused` bytes
-            // make new blobs if necessary to hold more data
-
-            // loop over the data, until we can fit the remainder in a single
-            // blob
-            while data.len() > self.unused {
-                let (left, right) = data.split_at(self.unused);
-
-                // copy to data, starting from the unused portion
-                let ptr = BYTES_PER_BLOB - self.unused;
-                let target = &mut (self.data.last_mut().expect("vec never empty")[ptr..]);
-                target.copy_from_slice(left);
-
-                // create a new blob and reset the unused counter
-                self.push_empty_blob();
-
-                // Set the remaining data to the right slice
-                data = right;
-            }
-            // copy the remaining data to the current blob, starting from the
-            // unused portion
-            let target = &mut (self.data.last_mut().expect("vec never empty")
-                [BYTES_PER_BLOB - self.unused..]);
-            let ptr = BYTES_PER_BLOB - self.unused;
-            target[ptr..ptr + data.len()].copy_from_slice(data);
-            self.unused -= data.len();
-        }
-
-        /// Build the sidecar from the data.
-        pub fn build(self, settings: &KzgSettings) -> Result<BlobTransactionSidecar, c_kzg::Error> {
-            let commitments = self
-                .data
-                .iter()
-                .map(|blob| {
-                    KzgCommitment::blob_to_kzg_commitment(blob, settings).map(|c| c.to_bytes())
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-
-            let proofs = self
-                .data
-                .iter()
-                .zip(commitments.iter())
-                .map(|(blob, commitment)| {
-                    KzgProof::compute_blob_kzg_proof(blob, commitment, settings)
-                        .map(|p| p.to_bytes())
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-
-            Ok(BlobTransactionSidecar { blobs: self.data, commitments, proofs })
-        }
+        //     Ok(BlobTransactionSidecar { blobs: self.data, commitments, proofs })
+        // }
     }
 
-    impl<'a> FromIterator<&'a [u8]> for SidecarBuilder {
+    impl<'a, T> FromIterator<&'a [u8]> for SidecarBuilder<T>
+    where
+        T: IngestionStrategy,
+    {
         fn from_iter<I: IntoIterator<Item = &'a [u8]>>(iter: I) -> Self {
             let mut this = Self::new();
             for data in iter {
@@ -1203,22 +1279,23 @@ mod builder {
 
     #[cfg(test)]
     mod tests {
-        use super::*;
+        // use super::*;
 
         #[test]
         fn it_ingests() {
-            // test ingesting data into a sidecar builder, by passing
-            // `blob_size+1 bytes`
-            let data = std::iter::repeat(1u8).take(BYTES_PER_BLOB + 1).collect::<Vec<_>>();
-            let mut builder = SidecarBuilder::new();
-            builder.ingest(&data);
-            assert_eq!(builder.data.len(), 2);
-            assert_eq!(builder.unused, BYTES_PER_BLOB - 1);
-            assert_eq!(builder.data.first().unwrap().as_slice(), &[1u8; BYTES_PER_BLOB]);
+            todo!()
+            // // test ingesting data into a sidecar builder, by passing
+            // // `blob_size+1 bytes`
+            // let data = std::iter::repeat(1u8).take(BYTES_PER_BLOB + 1).collect::<Vec<_>>();
+            // let mut builder = SidecarBuilder::new();
+            // builder.ingest(&data);
+            // assert_eq!(builder.blobs.len(), 2);
+            // assert_eq!(builder.next_unused_fe_mut(), BYTES_PER_BLOB - 1);
+            // assert_eq!(builder.blobs.first().unwrap().as_slice(), &[1u8; BYTES_PER_BLOB]);
 
-            let second = builder.data.last().unwrap();
-            assert_eq!(second[0], 1);
-            assert_eq!(&second[1..], &[0u8; BYTES_PER_BLOB - 1]);
+            // let second = builder.blobs.last().unwrap();
+            // assert_eq!(second[0], 1);
+            // assert_eq!(&second[1..], &[0u8; BYTES_PER_BLOB - 1]);
         }
     }
 }
