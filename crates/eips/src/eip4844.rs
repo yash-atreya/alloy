@@ -2,7 +2,16 @@
 //!
 //! [EIP-4844]: https://eips.ethereum.org/EIPS/eip-4844
 
-use alloy_primitives::FixedBytes;
+use alloy_primitives::{b256, FixedBytes, U256};
+
+/// The modulus of the BLS group used in the KZG commitment scheme. All field
+/// elements contained in a blob MUST be less than this value.
+pub const BLS_MODULUS_BYTES: FixedBytes<32> =
+    b256!("73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001");
+
+/// The modulus of the BLS group used in the KZG commitment scheme. All field
+/// elements contained in a blob MUST be less than this value.
+pub const BLS_MODULUS: U256 = U256::from_be_bytes(BLS_MODULUS_BYTES.0);
 
 /// Size a single field element in bytes.
 pub const FIELD_ELEMENT_BYTES: u64 = 32;

@@ -1049,7 +1049,7 @@ mod builder {
         ops::{Deref, DerefMut},
     };
 
-    use alloy_eips::eip4844::{BLS_MODULUS_BYTES, FIELD_ELEMENTS_PER_BLOB};
+    use alloy_eips::eip4844::FIELD_ELEMENTS_PER_BLOB;
 
     use super::*;
 
@@ -1058,7 +1058,7 @@ mod builder {
     pub fn is_valid_field_element(data: &[u8]) -> bool {
         match data.len() {
             33.. => false,
-            32 => data <= BLS_MODULUS_BYTES.as_slice(),
+            32 => data[0] & 0b1100_0000 == 0, // first two bits must be zero
             _ => true,
         }
     }
