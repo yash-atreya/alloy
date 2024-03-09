@@ -1040,22 +1040,23 @@ pub(crate) fn kzg_to_versioned_hash(commitment: KzgCommitment) -> B256 {
     B256::new(res.into())
 }
 
-// #[cfg(feature = "kzg")]
-// pub use builder::SidecarBuilder;
-// #[cfg(feature = "kzg")]
+#[cfg(feature = "kzg")]
+pub use builder::{IngestionStrategy, SidecarBuilder, SimpleCoder};
+
+#[cfg(feature = "kzg")]
 mod builder {
+    use core::num;
     use std::{
         marker::PhantomData,
         ops::{Deref, DerefMut},
     };
 
-    use alloy_eips::eip4844::FIELD_ELEMENTS_PER_BLOB;
+    use alloy_eips::eip4844::{FIELD_ELEMENTS_PER_BLOB, USABLE_BITS_PER_FIELD_ELEMENT};
 
     use super::*;
 
-    /// Determine whether a slice of bytes is a valid field element. Valid
-    /// field elements are 32 bytes long and less than the modulus.
-    pub fn is_valid_field_element(data: &[u8]) -> bool {
+    /// Determine whether a slice of bytes can be contained in a field element.
+    pub fn fits_in_fe(data: &[u8]) -> bool {
         match data.len() {
             33.. => false,
             32 => data[0] & 0b1100_0000 == 0, // first two bits must be zero
@@ -1063,50 +1064,86 @@ mod builder {
         }
     }
 
-    /// A coding strategy for ingesting and decoding data.
-    pub trait IngestionStrategy {
-        /// This function MUST write only complete, valid, field elements.
-        ///
-        /// # Returns
-        ///
-        /// The number of field elements written to the blobs.
-        fn code(data: &[u8], buffer: &mut SidecarBuilderInner) -> Result<usize, ()>;
-
-        fn decode(data: impl Iterator<Item = Blob>) -> Vec<u8>;
+    /// Calculate the number of field elements required to store the given
+    /// number of bytes.
+    pub fn required_fe_for_bytes(bytes: usize) -> usize {
+        (bytes * 8 + USABLE_BITS_PER_FIELD_ELEMENT) / USABLE_BITS_PER_FIELD_ELEMENT
     }
 
-    #[derive(Debug, Copy, Clone, Default)]
-    struct SimpleCoder;
+    /// Calculate the number of field elements required to store the given data.
+    pub fn required_fe(data: &[u8]) -> usize {
+        required_fe_for_bytes(data.len())
+    }
 
-    impl IngestionStrategy for SimpleCoder {
-        fn code(data: &[u8], buffer: &mut SidecarBuilderInner) -> Result<usize, ()> {
-            todo!()
+    /// A wrapper for a slice of bytes that is a whole, valid field element.
+    #[derive(Debug, Copy, Clone)]
+    struct WholeFe<'a>(&'a [u8]);
+
+    impl<'a> WholeFe<'a> {
+        fn new_unchecked(data: &'a [u8]) -> Self {
+            Self(data)
         }
 
-        fn decode(data: impl Iterator<Item = Blob>) -> Vec<u8> {
-            todo!()
+        /// Instantiate a new `WholeFe` from a slice of bytes, if it is a valid
+        /// field element.
+        pub fn new(data: &'a [u8]) -> Option<Self> {
+            if data.len() == 32 && fits_in_fe(data) {
+                Some(Self::new_unchecked(data))
+            } else {
+                None
+            }
         }
     }
 
-    #[derive(Debug, Clone, Default)]
-    struct SidecarBuilderInner {
+    impl AsRef<[u8]> for WholeFe<'_> {
+        fn as_ref(&self) -> &[u8] {
+            self.0
+        }
+    }
+
+    /// A builder for creating a [`BlobTransactionSidecar`].
+    #[derive(Debug, Clone)]
+    pub struct SidecarBuilderInner {
         /// The blobs in the sidecar.
         blobs: Vec<Blob>,
-        /// The number of field elements that we have ingested
+        /// The number of field elements that we have ingested, total.
         fe: usize,
     }
 
+    impl Default for SidecarBuilderInner {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl SidecarBuilderInner {
+        /// Create a new builder.
+        pub fn new() -> Self {
+            // NB: vecs default to 100 capacity. Blobs are large. We don't want
+            // to allocate 100 blobs if we don't need them.
+            Self::with_capacity(2)
+        }
+
+        /// Create a new builder with a given capacity.
+        pub fn with_capacity(capacity: usize) -> Self {
+            let mut blobs = Vec::with_capacity(capacity);
+            blobs.push(Blob::new([0u8; BYTES_PER_BLOB]));
+            Self { blobs, fe: 0 }
+        }
+
         /// Get a reference to the blobs currently in the builder.
         pub fn blobs(&self) -> &[Blob] {
             &self.blobs
         }
 
-        /// Get the number of unused bytes in the last blob. Ingesting
-        /// more than this number of bytes will cause a new blob to be
-        /// created.
+        /// Get the number of unused field elements in the current blob.
         fn free_fe(&self) -> usize {
             FIELD_ELEMENTS_PER_BLOB as usize - self.fe_in_current_blob()
+        }
+
+        /// Get the number of unused WHOLE bytes in the current blob.
+        fn free_bytes(&self) -> usize {
+            self.free_fe() * 254 / 8
         }
 
         /// Calculate the length of the data IN BYTES in the builder.
@@ -1124,13 +1161,27 @@ mod builder {
             self.blobs.push(Blob::new([0u8; BYTES_PER_BLOB]));
         }
 
+        /// Allocate a blob if there is not enough space for the required number
+        /// of new field elements.
+        fn check_alloc_fe(&mut self, required_fe: usize) {
+            if required_fe > self.free_fe() {
+                self.push_empty_blob();
+            }
+        }
+
+        /// Allocate a blob if there is not enough space for the required number
+        /// of new bytes.
+        fn check_alloc(&mut self, data: &[u8]) {
+            self.check_alloc_fe(required_fe(data));
+        }
+
         /// Get the number of used field elements in the current blob.
         fn fe_in_current_blob(&self) -> usize {
             self.fe % FIELD_ELEMENTS_PER_BLOB as usize
         }
 
         /// Get the index of the first unused field element in the current blob.
-        fn first_unused_index_in_current_blob(&self) -> Option<usize> {
+        fn first_unused_fe_index_in_current_blob(&self) -> Option<usize> {
             if self.fe_in_current_blob() as u64 == FIELD_ELEMENTS_PER_BLOB {
                 None
             } else {
@@ -1160,28 +1211,105 @@ mod builder {
         }
 
         /// Get a mutable reference to the next unused field element.
-        pub fn next_unused_fe_mut(&mut self) -> &mut [u8] {
-            if self.first_unused_index_in_current_blob().is_none() {
+        fn next_unused_fe_mut(&mut self) -> &mut [u8] {
+            if self.first_unused_fe_index_in_current_blob().is_none() {
                 self.push_empty_blob();
             }
-            self.fe_at_mut(self.first_unused_index_in_current_blob().expect(""))
+            self.fe_at_mut(self.first_unused_fe_index_in_current_blob().expect(""))
         }
 
         /// Ingest a field element into the current blobs.
         ///
         /// # Panics
-        pub fn ingest_fe(&mut self, data: &[u8]) -> Result<(), ()> {
-            if !is_valid_field_element(data) {
-                return Err(());
+        pub fn ingest_valid_fe(&mut self, data: WholeFe<'_>) {
+            self.check_alloc_fe(1);
+            self.next_unused_fe_mut().copy_from_slice(data.as_ref());
+            self.fe += 1;
+        }
+
+        /// Ingest a partial FE into the current blobs.
+        ///
+        /// # Panics
+        ///
+        /// If the data is >=32 bytes.
+        pub fn ingest_partial_fe(&mut self, data: &[u8]) {
+            self.check_alloc(data);
+            let fe = self.next_unused_fe_mut();
+            fe[1..1 + data.len()].copy_from_slice(data);
+            self.fe += 1;
+        }
+    }
+
+    pub trait IngestionStrategy {
+        /// Code a slice of data into the builder.
+        fn code(builder: &mut SidecarBuilderInner, data: &[u8]);
+        /// Decode all slices of data from the blobs.
+        fn decode_all(blobs: &[Blob]) -> Option<Vec<Vec<u8>>>;
+    }
+
+    /// Simple coder that only uses the last 31 bytes of each blob
+    pub struct SimpleCoder;
+
+    impl SimpleCoder {
+        /// Decode an some bytes from an iterator of valid FEs.
+        ///
+        /// Returns `Ok(Some(data))` if there is some data.
+        /// Returns `Ok(None)` if there is no data (length prefix is 0).
+        /// Returns `Err(())` if there is an error.
+        fn decode_one<'a>(
+            mut fes: impl Iterator<Item = WholeFe<'a>>,
+        ) -> Result<Option<Vec<u8>>, ()> {
+            let first = fes.next().ok_or(())?;
+            let mut num_bytes =
+                u64::from_be_bytes(first.as_ref()[1..9].try_into().unwrap()) as usize;
+
+            // if no more bytes is 0, we're done
+            if num_bytes == 0 {
+                return Ok(None);
             }
 
-            if self.next_unused_fe_mut() {
-                self.push_empty_blob();
+            let mut res = Vec::with_capacity(num_bytes);
+            while num_bytes > 0 {
+                let to_copy = std::cmp::min(31, num_bytes);
+                let fe = fes.next().ok_or(())?;
+                res.extend_from_slice(&fe.as_ref()[1..1 + to_copy]);
+                num_bytes -= to_copy;
+            }
+            Ok(Some(res))
+        }
+    }
+
+    impl IngestionStrategy for SimpleCoder {
+        fn code(builder: &mut SidecarBuilderInner, mut data: &[u8]) {
+            if data.is_empty() {
+                return;
             }
 
-            // copy by left-padding
-            self.next_unused_fe_mut()[1..].copy_from_slice(data);
-            Ok(())
+            // first FE is the number of following bytes
+            builder.ingest_partial_fe(&(data.len() as u64).to_be_bytes());
+
+            // ingest the rest of the data
+            while !data.is_empty() {
+                let (left, right) = data.split_at(std::cmp::min(31, data.len()));
+                builder.ingest_partial_fe(left);
+                data = right
+            }
+        }
+
+        fn decode_all(blobs: &[Blob]) -> Option<Vec<Vec<u8>>> {
+            let mut fes = blobs
+                .iter()
+                .flat_map(|blob| blob.chunks(32).map(|fe| WholeFe::new(fe)).map(Option::unwrap));
+
+            let mut res = Vec::new();
+            loop {
+                match Self::decode_one(&mut fes) {
+                    Ok(Some(data)) => res.push(data),
+                    Ok(None) => break,
+                    Err(()) => return None,
+                }
+            }
+            Some(res)
         }
     }
 
@@ -1237,41 +1365,44 @@ mod builder {
 
         /// Ingest a slice of data into the builder.
         pub fn ingest(&mut self, data: &[u8]) {
-            T::code(data, &mut self.inner);
+            T::code(&mut self.inner, data);
         }
 
-        // /// Build the sidecar from the data.
-        // pub fn build(self, settings: &KzgSettings) -> Result<BlobTransactionSidecar,
-        // c_kzg::Error> {     let commitments = self
-        //         .data
-        //         .iter()
-        //         .map(|blob| {
-        //             KzgCommitment::blob_to_kzg_commitment(blob, settings).map(|c| c.to_bytes())
-        //         })
-        //         .collect::<Result<Vec<_>, _>>()?;
+        /// Build the sidecar from the data.
+        pub fn build(self, settings: &KzgSettings) -> Result<BlobTransactionSidecar, c_kzg::Error> {
+            let commitments = self
+                .inner
+                .blobs
+                .iter()
+                .map(|blob| {
+                    KzgCommitment::blob_to_kzg_commitment(blob, settings).map(|c| c.to_bytes())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
 
-        //     let proofs = self
-        //         .data
-        //         .iter()
-        //         .zip(commitments.iter())
-        //         .map(|(blob, commitment)| {
-        //             KzgProof::compute_blob_kzg_proof(blob, commitment, settings)
-        //                 .map(|p| p.to_bytes())
-        //         })
-        //         .collect::<Result<Vec<_>, _>>()?;
+            let proofs = self
+                .inner
+                .blobs
+                .iter()
+                .zip(commitments.iter())
+                .map(|(blob, commitment)| {
+                    KzgProof::compute_blob_kzg_proof(blob, commitment, settings)
+                        .map(|p| p.to_bytes())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
 
-        //     Ok(BlobTransactionSidecar { blobs: self.data, commitments, proofs })
-        // }
+            Ok(BlobTransactionSidecar { blobs: self.inner.blobs, commitments, proofs })
+        }
     }
 
-    impl<'a, T> FromIterator<&'a [u8]> for SidecarBuilder<T>
+    impl<'a, T, R> FromIterator<R> for SidecarBuilder<T>
     where
         T: IngestionStrategy,
+        R: AsRef<[u8]>,
     {
-        fn from_iter<I: IntoIterator<Item = &'a [u8]>>(iter: I) -> Self {
+        fn from_iter<I: IntoIterator<Item = R>>(iter: I) -> Self {
             let mut this = Self::new();
             for data in iter {
-                this.ingest(data);
+                this.ingest(data.as_ref());
             }
             this
         }
@@ -1279,23 +1410,50 @@ mod builder {
 
     #[cfg(test)]
     mod tests {
-        // use super::*;
+        use super::*;
+
+        #[test]
+        fn required_fe() {
+            assert_eq!(super::required_fe(&[0u8; 32]), 2);
+            assert_eq!(super::required_fe(&[0u8; 31]), 1);
+            assert_eq!(super::required_fe(&[0u8; 33]), 2);
+            assert_eq!(super::required_fe(&[0u8; 64]), 3);
+            assert_eq!(super::required_fe(&[0u8; 65]), 3);
+        }
+
+        #[test]
+        fn is_valid_field_element() {
+            assert!(super::fits_in_fe(&[0u8; 32]));
+            assert!(!super::fits_in_fe(&[0u8; 33]));
+
+            assert!(WholeFe::new(&[0u8; 32]).is_some());
+            assert!(WholeFe::new(&[0u8; 33]).is_none());
+            assert!(WholeFe::new(&[0u8; 31]).is_none());
+        }
+
+        #[test]
+        fn ingestion_strategy() {
+            let mut builder = SidecarBuilderInner::new();
+            let data = &[vec![1u8; 32], vec![2u8; 372], vec![3u8; 17], vec![4u8; 5]];
+
+            data.iter().for_each(|data| SimpleCoder::code(&mut builder, data.as_slice()));
+
+            let decoded = SimpleCoder::decode_all(builder.blobs()).unwrap();
+            assert_eq!(decoded, data);
+        }
 
         #[test]
         fn it_ingests() {
-            todo!()
-            // // test ingesting data into a sidecar builder, by passing
-            // // `blob_size+1 bytes`
-            // let data = std::iter::repeat(1u8).take(BYTES_PER_BLOB + 1).collect::<Vec<_>>();
-            // let mut builder = SidecarBuilder::new();
-            // builder.ingest(&data);
-            // assert_eq!(builder.blobs.len(), 2);
-            // assert_eq!(builder.next_unused_fe_mut(), BYTES_PER_BLOB - 1);
-            // assert_eq!(builder.blobs.first().unwrap().as_slice(), &[1u8; BYTES_PER_BLOB]);
-
-            // let second = builder.blobs.last().unwrap();
-            // assert_eq!(second[0], 1);
-            // assert_eq!(&second[1..], &[0u8; BYTES_PER_BLOB - 1]);
+            // test ingesting a lot of data.
+            let data = vec![
+                vec![1u8; 32],
+                vec![2u8; 372],
+                vec![3u8; 17],
+                vec![4u8; 5],
+                vec![5u8; BYTES_PER_BLOB + 2],
+            ];
+            let mut builder = data.iter().collect::<SidecarBuilder<SimpleCoder>>();
+            builder.ingest("hello".as_bytes());
         }
     }
 }
