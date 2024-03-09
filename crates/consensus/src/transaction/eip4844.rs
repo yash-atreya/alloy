@@ -1,5 +1,5 @@
 mod builder;
-pub use builder::{IngestionStrategy, SidecarBuilder, SimpleCoder};
+pub use builder::{SidecarBuilder, SidecarCoder, SimpleCoder};
 
 pub mod utils;
 

@@ -25,9 +25,8 @@ pub use receipt::{Receipt, ReceiptEnvelope, ReceiptWithBloom};
 
 mod transaction;
 pub use transaction::{
-    eip4844_utils, BlobTransactionSidecar, IngestionStrategy, SidecarBuilder, SimpleCoder,
-    TxEip1559, TxEip2930, TxEip4844, TxEip4844Variant, TxEip4844WithSidecar, TxEnvelope, TxLegacy,
-    TxType,
+    eip4844_utils, BlobTransactionSidecar, SidecarBuilder, SidecarCoder, SimpleCoder, TxEip1559,
+    TxEip2930, TxEip4844, TxEip4844Variant, TxEip4844WithSidecar, TxEnvelope, TxLegacy, TxType,
 };
 
 #[cfg(feature = "kzg")]

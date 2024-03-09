@@ -14,20 +14,20 @@ use super::utils::WholeFe;
 
 /// A builder for creating a [`BlobTransactionSidecar`].
 #[derive(Debug, Clone)]
-pub struct SidecarBuilderInner {
+pub struct PartialSidecar {
     /// The blobs in the sidecar.
     blobs: Vec<Blob>,
     /// The number of field elements that we have ingested, total.
     fe: usize,
 }
 
-impl Default for SidecarBuilderInner {
+impl Default for PartialSidecar {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl SidecarBuilderInner {
+impl PartialSidecar {
     /// Create a new builder.
     pub fn new() -> Self {
         // NB: vecs default to 100 capacity. Blobs are large. We don't want
@@ -134,13 +134,13 @@ impl SidecarBuilderInner {
 }
 
 /// A strategy for coding and decoding data into sidecars.
-pub trait IngestionStrategy {
+pub trait SidecarCoder {
     /// Calculate the number of field elements required to store the given
     /// data.
     fn required_fe(data: &[u8]) -> usize;
 
     /// Code a slice of data into the builder.
-    fn code(builder: &mut SidecarBuilderInner, data: &[u8]);
+    fn code(builder: &mut PartialSidecar, data: &[u8]);
 
     /// Decode all slices of data from the blobs.
     fn decode_all(blobs: &[Blob]) -> Option<Vec<Vec<u8>>>;
@@ -176,12 +176,12 @@ impl SimpleCoder {
     }
 }
 
-impl IngestionStrategy for SimpleCoder {
+impl SidecarCoder for SimpleCoder {
     fn required_fe(data: &[u8]) -> usize {
         data.len().div_ceil(31) + 1
     }
 
-    fn code(builder: &mut SidecarBuilderInner, mut data: &[u8]) {
+    fn code(builder: &mut PartialSidecar, mut data: &[u8]) {
         if data.is_empty() {
             return;
         }
@@ -221,13 +221,13 @@ impl IngestionStrategy for SimpleCoder {
 /// until all data is ready.
 #[derive(Debug, Clone)]
 pub struct SidecarBuilder<T = SimpleCoder> {
-    inner: SidecarBuilderInner,
+    inner: PartialSidecar,
     /// The strategy to use for ingesting and decoding data.
     strategy: PhantomData<fn() -> T>,
 }
 
 impl Deref for SidecarBuilder {
-    type Target = SidecarBuilderInner;
+    type Target = PartialSidecar;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
@@ -242,17 +242,17 @@ impl DerefMut for SidecarBuilder {
 
 impl<T> Default for SidecarBuilder<T>
 where
-    T: Default + IngestionStrategy,
+    T: Default + SidecarCoder,
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: IngestionStrategy> SidecarBuilder<T> {
+impl<T: SidecarCoder> SidecarBuilder<T> {
     /// Instantiate a new builder.
     pub fn new() -> Self {
-        let mut this = Self { inner: SidecarBuilderInner::default(), strategy: PhantomData };
+        let mut this = Self { inner: PartialSidecar::default(), strategy: PhantomData };
         this.inner.push_empty_blob();
         this
     }
@@ -301,7 +301,7 @@ impl<T: IngestionStrategy> SidecarBuilder<T> {
 
 impl<'a, T, R> FromIterator<R> for SidecarBuilder<T>
 where
-    T: IngestionStrategy,
+    T: SidecarCoder,
     R: AsRef<[u8]>,
 {
     fn from_iter<I: IntoIterator<Item = R>>(iter: I) -> Self {
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn ingestion_strategy() {
-        let mut builder = SidecarBuilderInner::new();
+        let mut builder = PartialSidecar::new();
         let data = &[vec![1u8; 32], vec![2u8; 372], vec![3u8; 17], vec![4u8; 5]];
 
         data.iter().for_each(|data| SimpleCoder::code(&mut builder, data.as_slice()));
@@ -346,7 +346,7 @@ mod tests {
         let expected_fe = data.iter().map(|d| SimpleCoder::required_fe(d)).sum::<usize>();
         assert_eq!(builder.len(), expected_fe * 32);
 
-        // consume 2 more FEs
+        // consume 2 more
         builder.ingest("hello".as_bytes());
         assert_eq!(builder.len(), expected_fe * 32 + 64);
     }
