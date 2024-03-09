@@ -25,11 +25,12 @@ pub use receipt::{Receipt, ReceiptEnvelope, ReceiptWithBloom};
 
 mod transaction;
 pub use transaction::{
-    BlobTransactionSidecar, TxEip1559, TxEip2930, TxEip4844, TxEip4844Variant,
-    TxEip4844WithSidecar, TxEnvelope, TxLegacy, TxType,
+    eip4844_utils, BlobTransactionSidecar, IngestionStrategy, SidecarBuilder, SimpleCoder,
+    TxEip1559, TxEip2930, TxEip4844, TxEip4844Variant, TxEip4844WithSidecar, TxEnvelope, TxLegacy,
+    TxType,
 };
 
 #[cfg(feature = "kzg")]
-pub use transaction::{BlobTransactionValidationError, SidecarBuilder};
+pub use transaction::BlobTransactionValidationError;
 
 pub use alloy_network::TxKind;
