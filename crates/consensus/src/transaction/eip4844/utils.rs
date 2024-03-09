@@ -1,11 +1,11 @@
 //! Utilities for working with EIP-4844 field elements and implementing
-//! [`IngestionStrategy`].
+//! [`SidecarCoder`].
 //!
-//! [`IngestionStrategy`]: crate::transaction::IngestionStrategy
+//! [`SidecarCoder`]: crate::SidecarCoder
 use alloy_eips::eip4844::USABLE_BITS_PER_FIELD_ELEMENT;
 
 /// Determine whether a slice of bytes can be contained in a field element.
-pub fn fits_in_fe(data: &[u8]) -> bool {
+pub const fn fits_in_fe(data: &[u8]) -> bool {
     match data.len() {
         33.. => false,
         32 => data[0] & 0b1100_0000 == 0, // first two bits must be zero
@@ -15,12 +15,12 @@ pub fn fits_in_fe(data: &[u8]) -> bool {
 
 /// Calculate the number of field elements required to store the given
 /// number of bytes.
-pub fn minimum_fe_for_bytes(bytes: usize) -> usize {
+pub const fn minimum_fe_for_bytes(bytes: usize) -> usize {
     (bytes * 8).div_ceil(USABLE_BITS_PER_FIELD_ELEMENT)
 }
 
 /// Calculate the number of field elements required to store the given data.
-pub fn minimum_fe(data: &[u8]) -> usize {
+pub const fn minimum_fe(data: &[u8]) -> usize {
     minimum_fe_for_bytes(data.len())
 }
 
@@ -29,13 +29,13 @@ pub fn minimum_fe(data: &[u8]) -> usize {
 pub struct WholeFe<'a>(&'a [u8]);
 
 impl<'a> WholeFe<'a> {
-    fn new_unchecked(data: &'a [u8]) -> Self {
+    const fn new_unchecked(data: &'a [u8]) -> Self {
         Self(data)
     }
 
     /// Instantiate a new `WholeFe` from a slice of bytes, if it is a valid
     /// field element.
-    pub fn new(data: &'a [u8]) -> Option<Self> {
+    pub const fn new(data: &'a [u8]) -> Option<Self> {
         if data.len() == 32 && fits_in_fe(data) {
             Some(Self::new_unchecked(data))
         } else {

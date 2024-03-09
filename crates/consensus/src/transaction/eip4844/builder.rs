@@ -56,12 +56,12 @@ impl PartialSidecar {
     ///
     /// This is always strictly greater than the number of bytes that have been
     /// ingested.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.fe * 32
     }
 
     /// Check if the builder is empty.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.fe == 0
     }
 
@@ -78,12 +78,12 @@ impl PartialSidecar {
     }
 
     /// Get the number of used field elements in the current blob.
-    fn fe_in_current_blob(&self) -> usize {
+    const fn fe_in_current_blob(&self) -> usize {
         self.fe % FIELD_ELEMENTS_PER_BLOB as usize
     }
 
     /// Get the index of the first unused field element in the current blob.
-    fn first_unused_fe_index_in_current_blob(&self) -> Option<usize> {
+    const fn first_unused_fe_index_in_current_blob(&self) -> Option<usize> {
         if self.fe_in_current_blob() as u64 == FIELD_ELEMENTS_PER_BLOB {
             None
         } else {
@@ -198,9 +198,8 @@ impl SidecarCoder for SimpleCoder {
     }
 
     fn decode_all(blobs: &[Blob]) -> Option<Vec<Vec<u8>>> {
-        let mut fes = blobs
-            .iter()
-            .flat_map(|blob| blob.chunks(32).map(|fe| WholeFe::new(fe)).map(Option::unwrap));
+        let mut fes =
+            blobs.iter().flat_map(|blob| blob.chunks(32).map(WholeFe::new)).map(Option::unwrap);
 
         let mut res = Vec::new();
         loop {
@@ -219,6 +218,8 @@ impl SidecarCoder for SimpleCoder {
 /// This is useful for creating a sidecar from a large amount of data,
 /// which is then split into blobs. It delays KZG commitments and proofs
 /// until all data is ready.
+///
+/// [`BlobTransactionSidecar`]: crate::BlobTransactionSidecar
 #[derive(Debug, Clone)]
 pub struct SidecarBuilder<T = SimpleCoder> {
     inner: PartialSidecar,
@@ -272,7 +273,10 @@ impl<T: SidecarCoder> SidecarBuilder<T> {
 
     #[cfg(feature = "kzg")]
     /// Build the sidecar from the data.
-    pub fn build(self, settings: &KzgSettings) -> Result<BlobTransactionSidecar, c_kzg::Error> {
+    pub fn build(
+        self,
+        settings: &KzgSettings,
+    ) -> Result<crate::BlobTransactionSidecar, c_kzg::Error> {
         let commitments = self
             .inner
             .blobs
@@ -290,7 +294,7 @@ impl<T: SidecarCoder> SidecarBuilder<T> {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(BlobTransactionSidecar { blobs: self.inner.blobs, commitments, proofs })
+        Ok(crate::BlobTransactionSidecar { blobs: self.inner.blobs, commitments, proofs })
     }
 
     /// Take the blobs from the builder, without committing them to a KZG proof.
@@ -299,7 +303,7 @@ impl<T: SidecarCoder> SidecarBuilder<T> {
     }
 }
 
-impl<'a, T, R> FromIterator<R> for SidecarBuilder<T>
+impl<T, R> FromIterator<R> for SidecarBuilder<T>
 where
     T: SidecarCoder,
     R: AsRef<[u8]>,
