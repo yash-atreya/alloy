@@ -13,6 +13,8 @@ use alloy_eips::eip4844::{BYTES_PER_BLOB, FIELD_ELEMENTS_PER_BLOB};
 use super::utils::WholeFe;
 
 /// A builder for creating a [`BlobTransactionSidecar`].
+///
+/// [`BlobTransactionSidecar`]: crate::BlobTransactionSidecar
 #[derive(Debug, Clone)]
 pub struct PartialSidecar {
     /// The blobs in the sidecar.
@@ -337,7 +339,7 @@ mod tests {
     #[test]
     fn it_ingests() {
         // test ingesting a lot of data.
-        let data = vec![
+        let data = [
             vec![1u8; 32],
             vec![2u8; 372],
             vec![3u8; 17],
