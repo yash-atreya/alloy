@@ -3,10 +3,7 @@ use alloy_eips::eip4844::Blob;
 #[cfg(feature = "kzg")]
 use c_kzg::{Blob, KzgCommitment, KzgProof, KzgSettings};
 
-use std::{
-    marker::PhantomData,
-    ops::{Deref, DerefMut},
-};
+use std::marker::PhantomData;
 
 use alloy_eips::eip4844::{BYTES_PER_BLOB, FIELD_ELEMENTS_PER_BLOB};
 
@@ -227,20 +224,6 @@ pub struct SidecarBuilder<T = SimpleCoder> {
     inner: PartialSidecar,
     /// The strategy to use for ingesting and decoding data.
     strategy: PhantomData<fn() -> T>,
-}
-
-impl Deref for SidecarBuilder {
-    type Target = PartialSidecar;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl DerefMut for SidecarBuilder {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
-    }
 }
 
 impl<T> Default for SidecarBuilder<T>
