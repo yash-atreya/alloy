@@ -243,6 +243,19 @@ impl<T: SidecarCoder> SidecarBuilder<T> {
         this
     }
 
+    /// Calculate the length of bytes used by field elements in the builder.
+    ///
+    /// This is always strictly greater than the number of bytes that have been
+    /// ingested.
+    pub const fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Check if the builder is empty.
+    pub const fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
     /// Create a new builder from a slice of data.
     pub fn from_slice(data: &[u8]) -> SidecarBuilder<T> {
         let mut this = Self::new();
