@@ -3,8 +3,6 @@ use alloy_eips::eip4844::Blob;
 #[cfg(feature = "kzg")]
 use c_kzg::{Blob, KzgCommitment, KzgProof, KzgSettings};
 
-use std::marker::PhantomData;
-
 use alloy_eips::eip4844::{BYTES_PER_BLOB, FIELD_ELEMENTS_PER_BLOB};
 
 use super::utils::WholeFe;
@@ -132,20 +130,59 @@ impl PartialSidecar {
     }
 }
 
-/// A strategy for coding and decoding data into sidecars.
+/// A strategy for coding and decoding data into sidecars. Coder instances are
+/// responsible for encoding and decoding data into and from the sidecar. They
+/// are called by the [`SidecarBuilder`] during the [`ingest`],
+/// [`take`], and (if `c_kzg` feature enabled) `build` methods.
+///
+/// This trait allows different downstream users to use different bit-packing
+/// strategies. For example, a simple coder might only use the last 31 bytes of
+/// each blob, while a more complex coder might use a more sophisticated
+/// strategy to pack data into the low 6 bits of the top byte.
+///
+/// [`ingest`]: SidecarBuilder::ingest
+/// [`take`]: SidecarBuilder::take
 pub trait SidecarCoder {
     /// Calculate the number of field elements required to store the given
     /// data.
-    fn required_fe(data: &[u8]) -> usize;
+    fn required_fe(&self, data: &[u8]) -> usize;
 
     /// Code a slice of data into the builder.
-    fn code(builder: &mut PartialSidecar, data: &[u8]);
+    fn code(&mut self, builder: &mut PartialSidecar, data: &[u8]);
+
+    /// Finish the sidecar, and commit to the data. This method should empty
+    /// any buffer or scratch space in the coder, and is called by
+    /// [`SidecarBuilder`]'s `take` and `build` methods.
+    fn finish(self, builder: &mut PartialSidecar);
 
     /// Decode all slices of data from the blobs.
-    fn decode_all(blobs: &[Blob]) -> Option<Vec<Vec<u8>>>;
+    fn decode_all(&mut self, blobs: &[Blob]) -> Option<Vec<Vec<u8>>>;
 }
 
-/// Simple coder that only uses the last 31 bytes of each blob
+/// Simple coder that only uses the last 31 bytes of each blob. This is the
+/// default coder for the [`SidecarBuilder`].
+///
+/// # Note
+///
+/// Because this coder sacrifices around 3% of total sidecar space, we do not
+/// recommend its use in production. It is provided for convenience and
+/// non-prod environments.
+///
+/// # Behavior
+///
+/// This coder encodes data as follows:
+/// - The first byte of every 32-byte word is empty.
+/// - Data is pre-pended with a 64-bit big-endian length prefix, which is right padded with zeros to
+///   form a complete word.
+/// - The rest of the data is packed into the remaining 31 bytes of each word.
+/// - If the data is not a multiple of 31 bytes, the last word is right-padded with zeros.
+///
+/// This means that the following regions cannot be used to store data, and are
+/// considered "wasted":
+///
+/// - The first byte of every 32-byte word.
+/// - The right padding on the header word containing the data length.
+/// - Any right padding on the last word for each piece of data.
 #[derive(Debug, Copy, Clone, Default)]
 pub struct SimpleCoder;
 
@@ -176,11 +213,11 @@ impl SimpleCoder {
 }
 
 impl SidecarCoder for SimpleCoder {
-    fn required_fe(data: &[u8]) -> usize {
+    fn required_fe(&self, data: &[u8]) -> usize {
         data.len().div_ceil(31) + 1
     }
 
-    fn code(builder: &mut PartialSidecar, mut data: &[u8]) {
+    fn code(&mut self, builder: &mut PartialSidecar, mut data: &[u8]) {
         if data.is_empty() {
             return;
         }
@@ -196,7 +233,10 @@ impl SidecarCoder for SimpleCoder {
         }
     }
 
-    fn decode_all(blobs: &[Blob]) -> Option<Vec<Vec<u8>>> {
+    /// No-op
+    fn finish(self, _builder: &mut PartialSidecar) {}
+
+    fn decode_all(&mut self, blobs: &[Blob]) -> Option<Vec<Vec<u8>>> {
         let mut fes =
             blobs.iter().flat_map(|blob| blob.chunks(32).map(WholeFe::new)).map(Option::unwrap);
 
@@ -221,9 +261,10 @@ impl SidecarCoder for SimpleCoder {
 /// [`BlobTransactionSidecar`]: crate::BlobTransactionSidecar
 #[derive(Debug, Clone)]
 pub struct SidecarBuilder<T = SimpleCoder> {
+    /// The blob array we will code data into
     inner: PartialSidecar,
-    /// The strategy to use for ingesting and decoding data.
-    strategy: PhantomData<fn() -> T>,
+    /// The coder to use for ingesting and decoding data.
+    coder: T,
 }
 
 impl<T> Default for SidecarBuilder<T>
@@ -235,10 +276,22 @@ where
     }
 }
 
-impl<T: SidecarCoder> SidecarBuilder<T> {
-    /// Instantiate a new builder.
+impl<T: SidecarCoder + Default> SidecarBuilder<T> {
+    /// Instantiate a new builder and new coder instance.
     pub fn new() -> Self {
-        let mut this = Self { inner: PartialSidecar::default(), strategy: PhantomData };
+        Self::from_coder(T::default())
+    }
+
+    /// Create a new builder from a slice of data.
+    pub fn from_slice(data: &[u8]) -> SidecarBuilder<T> {
+        Self::from_coder_and_data(T::default(), data)
+    }
+}
+
+impl<T: SidecarCoder> SidecarBuilder<T> {
+    /// Instantiate a new builder with the provided coder.
+    pub fn from_coder(coder: T) -> Self {
+        let mut this = Self { inner: PartialSidecar::default(), coder };
         this.inner.push_empty_blob();
         this
     }
@@ -257,16 +310,16 @@ impl<T: SidecarCoder> SidecarBuilder<T> {
     }
 
     /// Create a new builder from a slice of data.
-    pub fn from_slice(data: &[u8]) -> SidecarBuilder<T> {
-        let mut this = Self::new();
+    pub fn from_coder_and_data(coder: T, data: &[u8]) -> SidecarBuilder<T> {
+        let mut this = Self::from_coder(coder);
         this.ingest(data);
         this
     }
 
     /// Ingest a slice of data into the builder.
     pub fn ingest(&mut self, data: &[u8]) {
-        self.inner.alloc_fes(T::required_fe(data));
-        T::code(&mut self.inner, data);
+        self.inner.alloc_fes(self.coder.required_fe(data));
+        self.coder.code(&mut self.inner, data);
     }
 
     #[cfg(feature = "kzg")]
@@ -303,7 +356,7 @@ impl<T: SidecarCoder> SidecarBuilder<T> {
 
 impl<T, R> FromIterator<R> for SidecarBuilder<T>
 where
-    T: SidecarCoder,
+    T: SidecarCoder + Default,
     R: AsRef<[u8]>,
 {
     fn from_iter<I: IntoIterator<Item = R>>(iter: I) -> Self {
@@ -326,9 +379,9 @@ mod tests {
         let mut builder = PartialSidecar::new();
         let data = &[vec![1u8; 32], vec![2u8; 372], vec![3u8; 17], vec![4u8; 5]];
 
-        data.iter().for_each(|data| SimpleCoder::code(&mut builder, data.as_slice()));
+        data.iter().for_each(|data| SimpleCoder.code(&mut builder, data.as_slice()));
 
-        let decoded = SimpleCoder::decode_all(builder.blobs()).unwrap();
+        let decoded = SimpleCoder.decode_all(builder.blobs()).unwrap();
         assert_eq!(decoded, data);
     }
 
@@ -345,7 +398,7 @@ mod tests {
 
         let mut builder = data.iter().collect::<SidecarBuilder<SimpleCoder>>();
 
-        let expected_fe = data.iter().map(|d| SimpleCoder::required_fe(d)).sum::<usize>();
+        let expected_fe = data.iter().map(|d| SimpleCoder.required_fe(d)).sum::<usize>();
         assert_eq!(builder.len(), expected_fe * 32);
 
         // consume 2 more
