@@ -38,7 +38,7 @@ impl<S> SignerLayer<S> {
 
 impl<P, N, T, S> ProviderLayer<P, N, T> for SignerLayer<S>
 where
-    P: Provider<N, T> + Clone,
+    P: Provider<N, T>,
     N: Network,
     T: Transport + Clone,
     S: NetworkSigner<N> + Clone,
@@ -64,7 +64,7 @@ pub struct SignerProvider<N, T, P, S>
 where
     N: Network,
     T: Transport + Clone,
-    P: Provider<N, T> + Clone,
+    P: Provider<N, T>,
 {
     inner: Arc<P>,
     signer: S,
@@ -77,7 +77,7 @@ impl<N, T, P, S> Provider<N, T> for SignerProvider<N, T, P, S>
 where
     N: Network,
     T: Transport + Clone,
-    P: Provider<N, T> + Clone,
+    P: Provider<N, T>,
     S: NetworkSigner<N>,
 {
     #[inline]

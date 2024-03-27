@@ -43,7 +43,7 @@ pub struct GasEstimatorLayer;
 
 impl<P, N, T> ProviderLayer<P, N, T> for GasEstimatorLayer
 where
-    P: Provider<N, T> + Clone,
+    P: Provider<N, T>,
     N: Network,
     T: Transport + Clone,
 {
@@ -66,7 +66,7 @@ pub struct GasEstimatorProvider<N, T, P>
 where
     N: Network,
     T: Transport + Clone,
-    P: Provider<N, T> + Clone,
+    P: Provider<N, T>,
 {
     inner: Arc<P>,
     _phantom: PhantomData<(N, T)>,
@@ -76,7 +76,7 @@ impl<N, T, P> GasEstimatorProvider<N, T, P>
 where
     N: Network,
     T: Transport + Clone,
-    P: Provider<N, T> + Clone,
+    P: Provider<N, T>,
 {
     /// Creates a new GasEstimatorProvider.
     pub(crate) const fn new(inner: Arc<P>) -> Self {
@@ -161,7 +161,7 @@ impl<N, T, P> Provider<N, T> for GasEstimatorProvider<N, T, P>
 where
     N: Network,
     T: Transport + Clone,
-    P: Provider<N, T> + Clone,
+    P: Provider<N, T>,
 {
     fn root(&self) -> &RootProvider<N, T> {
         self.inner.root()

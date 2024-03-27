@@ -41,7 +41,7 @@ pub struct ManagedNonceLayer;
 
 impl<P, N, T> ProviderLayer<P, N, T> for ManagedNonceLayer
 where
-    P: Provider<N, T> + Clone,
+    P: Provider<N, T>,
     N: Network,
     T: Transport + Clone,
 {
@@ -69,7 +69,7 @@ pub struct ManagedNonceProvider<N, T, P>
 where
     N: Network,
     T: Transport + Clone,
-    P: Provider<N, T> + Clone,
+    P: Provider<N, T>,
 {
     inner: Arc<P>,
     nonces: DashMap<Address, Arc<Mutex<Option<u64>>>>,
@@ -80,7 +80,7 @@ impl<N, T, P> ManagedNonceProvider<N, T, P>
 where
     N: Network,
     T: Transport + Clone,
-    P: Provider<N, T> + Clone,
+    P: Provider<N, T>,
 {
     /// Creates a new ManagedNonceProvider.
     pub(crate) fn new(inner: Arc<P>) -> Self {
@@ -115,7 +115,7 @@ impl<N, T, P> Provider<N, T> for ManagedNonceProvider<N, T, P>
 where
     N: Network,
     T: Transport + Clone,
-    P: Provider<N, T> + Clone,
+    P: Provider<N, T>,
 {
     #[inline]
     fn root(&self) -> &RootProvider<N, T> {

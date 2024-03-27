@@ -14,7 +14,7 @@ pub struct FillTxLayer;
 
 impl<P, N, T> ProviderLayer<P, N, T> for FillTxLayer
 where
-    P: Provider<N, T> + Clone,
+    P: Provider<N, T>,
     N: Network,
     T: Transport + Clone,
 {
@@ -34,7 +34,7 @@ pub struct FillTxProvider<N, T, P>
 where
     N: Network,
     T: Transport + Clone,
-    P: Provider<N, T> + Clone,
+    P: Provider<N, T>,
 {
     inner: Arc<P>,
     nonce_provider: ManagedNonceProvider<N, T, P>,
@@ -46,7 +46,7 @@ impl<N, T, P> FillTxProvider<N, T, P>
 where
     N: Network,
     T: Transport + Clone,
-    P: Provider<N, T> + Clone,
+    P: Provider<N, T>,
 {
     /// Fills in missing transaction fields.
     pub async fn fill_tx(&self, tx: &mut N::TransactionRequest) -> TransportResult<()> {
@@ -91,7 +91,7 @@ impl<N, T, P> Provider<N, T> for FillTxProvider<N, T, P>
 where
     N: Network,
     T: Transport + Clone,
-    P: Provider<N, T> + Clone,
+    P: Provider<N, T>,
 {
     #[inline]
     fn root(&self) -> &RootProvider<N, T> {
