@@ -7,8 +7,7 @@ use alloy_primitives::U256;
 use alloy_transport::{Transport, TransportError, TransportResult};
 use async_trait::async_trait;
 use futures::FutureExt;
-use std::marker::PhantomData;
-
+use std::{marker::PhantomData, sync::Arc};
 /// A layer that populates gas related fields in transaction requests if unset.
 ///
 /// Gas related fields are gas_price, gas_limit, max_fee_per_gas and max_priority_fee_per_gas.
@@ -49,8 +48,8 @@ where
     T: Transport + Clone,
 {
     type Provider = GasEstimatorProvider<N, T, P>;
-    fn layer(&self, inner: P) -> Self::Provider {
-        GasEstimatorProvider { inner, _phantom: PhantomData }
+    fn layer(&self, inner: Arc<P>) -> Arc<Self::Provider> {
+        GasEstimatorProvider { inner, _phantom: PhantomData }.into()
     }
 }
 
@@ -69,7 +68,7 @@ where
     T: Transport + Clone,
     P: Provider<N, T> + Clone,
 {
-    inner: P,
+    inner: Arc<P>,
     _phantom: PhantomData<(N, T)>,
 }
 
@@ -80,7 +79,7 @@ where
     P: Provider<N, T> + Clone,
 {
     /// Creates a new GasEstimatorProvider.
-    pub(crate) const fn new(inner: P) -> Self {
+    pub(crate) const fn new(inner: Arc<P>) -> Self {
         Self { inner, _phantom: PhantomData }
     }
 

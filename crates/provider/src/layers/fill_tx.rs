@@ -6,7 +6,7 @@ use alloy_network::{Network, TransactionBuilder};
 use alloy_transport::{Transport, TransportError, TransportErrorKind, TransportResult};
 use async_trait::async_trait;
 use futures::FutureExt;
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::Arc};
 
 /// A layer that fills in missing transaction fields.
 #[derive(Debug, Clone, Copy)]
@@ -20,10 +20,11 @@ where
 {
     type Provider = FillTxProvider<N, T, P>;
 
-    fn layer(&self, inner: P) -> Self::Provider {
-        let nonce_provider = ManagedNonceProvider::new(inner.clone());
-        let gas_estimation_provider = GasEstimatorProvider::new(inner.clone());
+    fn layer(&self, inner: Arc<P>) -> Arc<Self::Provider> {
+        let nonce_provider = ManagedNonceProvider::new(Arc::clone(&inner));
+        let gas_estimation_provider = GasEstimatorProvider::new(Arc::clone(&inner));
         FillTxProvider { inner, nonce_provider, gas_estimation_provider, _phantom: PhantomData }
+            .into()
     }
 }
 
@@ -35,7 +36,7 @@ where
     T: Transport + Clone,
     P: Provider<N, T> + Clone,
 {
-    inner: P,
+    inner: Arc<P>,
     nonce_provider: ManagedNonceProvider<N, T, P>,
     gas_estimation_provider: GasEstimatorProvider<N, T, P>,
     _phantom: PhantomData<(N, T)>,

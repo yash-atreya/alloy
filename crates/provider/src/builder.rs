@@ -2,7 +2,7 @@ use crate::{layers::SignerLayer, Provider, RootProvider};
 use alloy_network::{Ethereum, Network};
 use alloy_rpc_client::RpcClient;
 use alloy_transport::Transport;
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::Arc};
 
 /// A layering abstraction in the vein of [`tower::Layer`]
 ///
@@ -12,7 +12,7 @@ pub trait ProviderLayer<P: Provider<N, T> + Clone, N: Network, T: Transport + Cl
     type Provider: Provider<N, T> + Clone;
 
     /// Wrap the given provider in the layer's provider.
-    fn layer(&self, inner: P) -> Self::Provider;
+    fn layer(&self, inner: Arc<P>) -> Arc<Self::Provider>;
 }
 
 /// An identity layer that does nothing.
@@ -27,7 +27,7 @@ where
 {
     type Provider = P;
 
-    fn layer(&self, inner: P) -> Self::Provider {
+    fn layer(&self, inner: Arc<P>) -> Arc<Self::Provider> {
         inner
     }
 }
@@ -35,13 +35,13 @@ where
 /// A stack of two providers.
 #[derive(Debug)]
 pub struct Stack<Inner, Outer> {
-    inner: Inner,
-    outer: Outer,
+    inner: Arc<Inner>,
+    outer: Arc<Outer>,
 }
 
 impl<Inner, Outer> Stack<Inner, Outer> {
     /// Create a new `Stack`.
-    pub const fn new(inner: Inner, outer: Outer) -> Self {
+    pub const fn new(inner: Arc<Inner>, outer: Arc<Outer>) -> Self {
         Stack { inner, outer }
     }
 }
@@ -56,7 +56,7 @@ where
 {
     type Provider = Outer::Provider;
 
-    fn layer(&self, provider: P) -> Self::Provider {
+    fn layer(&self, provider: Arc<P>) -> Arc<Self::Provider> {
         let inner = self.inner.layer(provider);
 
         self.outer.layer(inner)
@@ -101,7 +101,10 @@ impl<L, N> ProviderBuilder<L, N> {
     /// [`tower::ServiceBuilder::layer`]: https://docs.rs/tower/latest/tower/struct.ServiceBuilder.html#method.layer
     /// [`tower::ServiceBuilder`]: https://docs.rs/tower/latest/tower/struct.ServiceBuilder.html
     pub fn layer<Inner>(self, layer: Inner) -> ProviderBuilder<Stack<Inner, L>, N> {
-        ProviderBuilder { layer: Stack::new(layer, self.layer), network: PhantomData }
+        ProviderBuilder {
+            layer: Stack::new(Arc::new(layer), Arc::new(self.layer)),
+            network: PhantomData,
+        }
     }
 
     /// Add a signer layer to the stack being built.
@@ -125,14 +128,14 @@ impl<L, N> ProviderBuilder<L, N> {
 
     /// Finish the layer stack by providing a root [`Provider`], outputting
     /// the final [`Provider`] type with all stack components.
-    pub fn provider<P, T>(self, provider: P) -> L::Provider
+    pub fn provider<P, T>(self, provider: P) -> Arc<L::Provider>
     where
         L: ProviderLayer<P, N, T>,
         P: Provider<N, T> + Clone,
         T: Transport + Clone,
         N: Network,
     {
-        self.layer.layer(provider)
+        self.layer.layer(provider.into())
     }
 
     /// Finish the layer stack by providing a root [`RpcClient`], outputting
@@ -140,7 +143,7 @@ impl<L, N> ProviderBuilder<L, N> {
     ///
     /// This is a convenience function for
     /// `ProviderBuilder::provider<RpcClient>`.
-    pub fn on_client<T>(self, client: RpcClient<T>) -> L::Provider
+    pub fn on_client<T>(self, client: RpcClient<T>) -> Arc<L::Provider>
     where
         L: ProviderLayer<RootProvider<N, T>, N, T>,
         T: Transport + Clone,

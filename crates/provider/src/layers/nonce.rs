@@ -47,8 +47,8 @@ where
 {
     type Provider = ManagedNonceProvider<N, T, P>;
 
-    fn layer(&self, inner: P) -> Self::Provider {
-        ManagedNonceProvider { inner, nonces: DashMap::default(), _phantom: PhantomData }
+    fn layer(&self, inner: Arc<P>) -> Arc<Self::Provider> {
+        ManagedNonceProvider { inner, nonces: DashMap::default(), _phantom: PhantomData }.into()
     }
 }
 
@@ -71,7 +71,7 @@ where
     T: Transport + Clone,
     P: Provider<N, T> + Clone,
 {
-    inner: P,
+    inner: Arc<P>,
     nonces: DashMap<Address, Arc<Mutex<Option<u64>>>>,
     _phantom: PhantomData<(N, T)>,
 }
@@ -83,7 +83,7 @@ where
     P: Provider<N, T> + Clone,
 {
     /// Creates a new ManagedNonceProvider.
-    pub(crate) fn new(inner: P) -> Self {
+    pub(crate) fn new(inner: Arc<P>) -> Self {
         Self { inner, nonces: DashMap::default(), _phantom: PhantomData }
     }
 

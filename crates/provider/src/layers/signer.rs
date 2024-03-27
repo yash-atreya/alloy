@@ -2,7 +2,7 @@ use crate::{PendingTransactionBuilder, Provider, ProviderLayer, RootProvider};
 use alloy_network::{eip2718::Encodable2718, Network, NetworkSigner, TransactionBuilder};
 use alloy_transport::{Transport, TransportErrorKind, TransportResult};
 use async_trait::async_trait;
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::Arc};
 
 /// A layer that signs transactions locally.
 ///
@@ -45,8 +45,8 @@ where
 {
     type Provider = SignerProvider<N, T, P, S>;
 
-    fn layer(&self, inner: P) -> Self::Provider {
-        SignerProvider { inner, signer: self.signer.clone(), _phantom: PhantomData }
+    fn layer(&self, inner: Arc<P>) -> Arc<Self::Provider> {
+        SignerProvider { inner, signer: self.signer.clone(), _phantom: PhantomData }.into()
     }
 }
 
@@ -66,7 +66,7 @@ where
     T: Transport + Clone,
     P: Provider<N, T> + Clone,
 {
-    inner: P,
+    inner: Arc<P>,
     signer: S,
     _phantom: PhantomData<(N, T)>,
 }
